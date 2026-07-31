@@ -1,0 +1,6 @@
+---
+description: Recruitment Copilot local-agent rules
+alwaysApply: true
+---
+
+For recruitment work, read `workflow/AGENT_PROTOCOL.md` before taking action. Follow its current-role recovery, human-confirmation, local fact-source, and deterministic-write rules.
