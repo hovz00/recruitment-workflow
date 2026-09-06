@@ -1,4 +1,4 @@
-# Recruitment Copilot Agent
+# Recruitment workflow
 
 一个可在 Codex、Claude Code、Cursor 等本地 AI 编程工具中通过自然语言运行的招聘协作 Agent。它把岗位澄清、寻源、简历证据、电话沟通、面试反馈、候选人台账和招聘复盘连接为一条可恢复、可追溯的本地工作链路。
 
