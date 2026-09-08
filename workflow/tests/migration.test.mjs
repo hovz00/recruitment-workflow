@@ -1,0 +1,26 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import ExcelJS from 'exceljs';
+import { buildLedger, ledgerColumns } from '../scripts/create-role-ledger.mjs';
+import { migrateRoleWorkspace } from '../scripts/migrate-role-workspace.mjs';
+test('legacy migration preserves rows and documents and is repeatable', async t => {
+  const rootPath=await fs.mkdtemp(path.join(os.tmpdir(),'migrate-role-'));t.after(()=>fs.rm(rootPath,{recursive:true,force:true}));
+  const rolePath=path.join(rootPath,'workflow','roles','岗位');await fs.mkdir(rolePath,{recursive:true});
+  const pipeline={stages:[{id:0,name:'筛选'},{id:1,name:'入职',slaDays:5}]};
+  const book=await buildLedger('岗位',pipeline,{capacity:3});const sheet=book.getWorksheet('候选人台账');
+  sheet.spliceColumns(ledgerColumns.length+1,sheet.columnCount-ledgerColumns.length);
+  sheet.getCell('B4').value='保留姓名';sheet.getCell('AN4').value='保留备注';
+  await book.xlsx.writeFile(path.join(rolePath,'candidate-ledger.xlsx'));await fs.writeFile(path.join(rolePath,'PIPELINE.json'),JSON.stringify(pipeline));
+  await fs.writeFile(path.join(rolePath,'CONTEXT.md'),'保留岗位事实\n');await fs.writeFile(path.join(rolePath,'index.html'),'<html>旧看板</html>');
+  await migrateRoleWorkspace({rootPath,roleName:'岗位'});await migrateRoleWorkspace({rootPath,roleName:'岗位'});
+  const result=new ExcelJS.Workbook();await result.xlsx.readFile(path.join(rolePath,'candidate-ledger.xlsx'));
+  assert.equal(result.getWorksheet('候选人台账').getCell('B4').value,'保留姓名');
+  assert.equal(result.getWorksheet('候选人台账').getCell('AN4').value,'保留备注');
+  const headers=result.getWorksheet('候选人台账').getRow(3).values.slice(1);assert.equal(headers.filter(h=>h==='1-入职通过日期').length,1);
+  assert.equal(await fs.readFile(path.join(rolePath,'CONTEXT.md'),'utf8'),'保留岗位事实\n');
+  await fs.access(path.join(rolePath,'ACTION_LOG.md'));await fs.access(path.join(rolePath,'candidates'));
+  assert.match(await fs.readFile(path.join(rolePath,'招聘数据复盘.html'),'utf8'),/AUTO_LEDGER_DATA/);
+});

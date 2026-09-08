@@ -1,4 +1,8 @@
 node_modules/
+.npm-cache/
+outputs/
+*.tmp
+*.bak
 .worktrees/
 .pnpm-store/
 .next/

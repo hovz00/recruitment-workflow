@@ -19,6 +19,6 @@ test("tool entry files route recruitment work to the single agent protocol", asy
 
 test("agent CLI help is handled by the invoked script, not an imported dependency", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["workflow/scripts/initialize-role-workspace.mjs", "--help"]);
-  assert.match(stdout, /已确认流程的岗位工作区/);
+  assert.match(stdout, /创建岗位工作区/);
   assert.doesNotMatch(stdout, /按岗位流程创建候选人台账/);
 });

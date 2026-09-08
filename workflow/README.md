@@ -1,6 +1,6 @@
 # Workflow 包说明
 
-`workflow/` 是 Recruitment Copilot Agent 的长期事实源和可复用招聘能力包。完整的项目介绍、安装、命令和使用流程见仓库根目录的 [README](../README.md)；统一启动与确认规则见 [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md)。
+`workflow/` 是 Recruitment Workflow 的长期事实源和可复用招聘能力包。完整的项目介绍、安装、命令和使用流程见仓库根目录的 [README](../README.md)；统一启动与确认规则见 [AGENT_PROTOCOL.md](AGENT_PROTOCOL.md)。
 
 ## 开始方式
 

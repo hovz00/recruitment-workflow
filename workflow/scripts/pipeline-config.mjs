@@ -4,9 +4,11 @@ export const defaultStatuses = ["进行中", "通过", "终止"];
 
 export function normalizePipeline(input) {
   if (!Array.isArray(input?.stages) || input.stages.length === 0) throw new Error("流程配置至少需要一个主阶段。");
-  const stages = input.stages.map(({ id, name }) => ({ id: Number(id), name: String(name ?? "").trim() })).sort((a, b) => a.id - b.id);
+  const stages = input.stages.map(({ id, name, slaDays }) => ({ id: Number(id), name: String(name ?? "").trim(), ...(slaDays === undefined ? {} : { slaDays: Number(slaDays) }) })).sort((a, b) => a.id - b.id);
   if (stages.some((stage) => !Number.isInteger(stage.id) || !stage.name)) throw new Error("每个阶段必须有整数 id 和非空名称。");
   if (new Set(stages.map((stage) => stage.id)).size !== stages.length) throw new Error("流程阶段 id 不能重复。");
+  if (new Set(stages.map((stage) => stage.name)).size !== stages.length) throw new Error("流程阶段名称不能重复。");
+  if (stages.some(({ slaDays }) => slaDays !== undefined && (!Number.isInteger(slaDays) || slaDays < 1 || slaDays > 90))) throw new Error("阶段 SLA 天数必须为 1 至 90 的整数。");
   if (stages.some((stage, index) => stage.id !== index)) throw new Error("流程阶段 id 必须从 0 开始连续编号，确保 Excel 与复盘漏斗顺序一致。");
   const statuses = [...new Set((input.statuses ?? defaultStatuses).map((value) => String(value).trim()).filter(Boolean))];
   if (statuses.join("|") !== defaultStatuses.join("|")) throw new Error("阶段状态必须且只能为：进行中、通过、终止。");

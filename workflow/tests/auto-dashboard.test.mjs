@@ -15,7 +15,7 @@ test("ledger rows are converted to the formal dashboard's stable headers", () =>
   const [row] = rowsFromLedgerValues([
     ["姓名", "主阶段", "阶段状态", "终止原因", "备注", "简历收取时间", "简历来源", "当前公司"],
     ["候选人A", "2-业务一面", "进行中", "", "已约面，等待面试", "2026-07-22", "员工推荐", "公司A"],
-  ], "AI 产品经理");
+  ], "AI 产品经理", { privacy: "internal" });
 
   assert.deepEqual(row, {
     "主阶段": "2-业务一面",
@@ -27,6 +27,7 @@ test("ledger rows are converted to the formal dashboard's stable headers", () =>
     "候选人姓名": "候选人A",
     "简历来源": "员工推荐",
     "当前公司": "公司A",
+    "Offer接受日期": "", "预计入职日期": "",
   });
 });
 
@@ -45,7 +46,7 @@ test("formal dashboard injection configures its real stage order and initialises
 
   assert.match(result, /AUTO_LEDGER_DATA:START/);
   assert.match(result, /AUTO_DASHBOARD_STAGE_ORDER/);
-  assert.match(result, /STAGES_CONFIG = AUTO_DASHBOARD_STAGE_ORDER/);
+  assert.match(result, /applyStageConfiguration\(stages\)/);
   assert.match(result, /applyAutoLedgerData\(\);/);
   assert.match(result, /"候选人姓名":"候选人A"/);
 });
@@ -55,10 +56,10 @@ test("formal dashboard injection exits the default stage configuration modal", (
   const result = injectAutoLedgerData(source, [{ "候选人姓名": "候选人A" }], ["0-简历待评估"]);
 
   assert.match(result, /stageConfigModal'\)\?\.classList\.remove\('active'\)/);
-  assert.match(result, /fileInput\.disabled = true/);
+  assert.match(result, /fileInput\.disabled = false/);
 });
 
-test("workflow-synced dashboard is labelled with its role and hides upload controls", () => {
+test("workflow-synced dashboard is labelled with its role and keeps upload controls available", () => {
   const source = "<body><h1 data-dashboard-title>招聘数据分析</h1><button data-upload-entry>上传</button><script>let STAGES_CONFIG; let rawData; function transformData(v){return v} function initTimeSelectors(){} function refreshData(){} function showPageMessage(){} const DEFAULT_STAGES_CONFIG=[]; function getStageColor(){return '#000'};</script></body>";
   const result = injectAutoLedgerData(source, [{ "候选人姓名": "候选人A" }], ["0-简历待评估"], { role: "AI 产品经理" });
 
@@ -90,10 +91,10 @@ test("a role can create the formal template and synchronise a configured ledger 
   ledger.getCell("M4").value = "员工推荐";
   await workbook.xlsx.writeFile(ledgerPath);
   await createReviewDashboard(dashboardPath);
-  await syncDashboard({ ledgerPath, dashboardPath, role: "测试岗位" });
+  await syncDashboard({ ledgerPath, dashboardPath, role: "测试岗位", privacy: "internal" });
   const result = await fs.readFile(dashboardPath, "utf8");
 
-  assert.match(result, /招聘数据分析/);
+  assert.match(result, /招聘数据复盘/);
   assert.match(result, /"1-业务沟通"/);
   assert.match(result, /"候选人姓名":"候选人A"/);
   await fs.rm(directory, { recursive: true, force: true });

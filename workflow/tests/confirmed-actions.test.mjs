@@ -6,6 +6,7 @@ import test from "node:test";
 import ExcelJS from "exceljs";
 
 import { createPendingAction, applyConfirmedAction } from "../scripts/apply-confirmed-action.mjs";
+import { setCurrentRole } from "../scripts/agent-state.mjs";
 import { buildLedger } from "../scripts/create-role-ledger.mjs";
 import { createReviewDashboard } from "../scripts/create-review-dashboard.mjs";
 
@@ -24,6 +25,7 @@ async function setupRole() {
   ledger.getCell("U4").value = "进行中";
   await workbook.xlsx.writeFile(path.join(rolePath, "candidate-ledger.xlsx"));
   await createReviewDashboard(path.join(rolePath, "招聘数据复盘.html"));
+  await setCurrentRole({ rootPath, role: "测试岗位" });
   return { rootPath, rolePath };
 }
 
@@ -87,6 +89,7 @@ test("confirmed create action adds a candidate only after confirmation", async (
       { field: "主阶段", before: "", after: "0-简历初筛" },
       { field: "阶段状态", before: "", after: "进行中" },
       { field: "简历来源", before: "", after: "员工推荐" },
+      { field: "简历收取时间", before: "", after: "2026-08-01" },
     ], evidence: ["招聘者确认新增候选人"],
   } });
   await applyConfirmedAction({ rootPath, proposalId: proposal.id });

@@ -57,14 +57,15 @@ test("summarises candidate progress and pending follow-up from a role ledger", a
   sheet.getCell("T5").value = "0-简历初筛";
   sheet.getCell("U5").value = "通过";
   await workbook.xlsx.writeFile(ledgerPath);
+  await fs.writeFile(path.join(directory, "PIPELINE.json"), JSON.stringify({ stages: [{id:0,name:"简历初筛"},{id:1,name:"业务一面"}] }));
   await fs.writeFile(path.join(directory, "ACTION_LOG.md"), "## 2026-07-29 10:00｜候选人状态更新\n", "utf8");
 
   const snapshot = await getRoleSnapshot({ roleName: "测试岗位", rolePath: directory, now: new Date("2026-07-31T09:00:00") });
 
   assert.equal(snapshot.candidateTotal, 2);
-  assert.equal(snapshot.inProgress, 1);
+  assert.equal(snapshot.inProgress, 2);
   assert.equal(snapshot.dueFollowUps, 1);
-  assert.equal(snapshot.missingNextActions, 1);
+  assert.equal(snapshot.missingNextActions, 2);
   assert.equal(snapshot.pendingFeedback, 1);
   assert.match(snapshot.lastAction, /候选人状态更新/);
   await fs.rm(directory, { recursive: true, force: true });

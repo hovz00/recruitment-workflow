@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { safeSegment, boundedPath, withRootLock } from "./workspace-safety.mjs";
 
 export const stateDirectory = (rootPath) => path.join(rootPath, ".recruitment-agent");
 export const currentRolePath = (rootPath) => path.join(stateDirectory(rootPath), "current-role.json");
@@ -24,14 +25,14 @@ export async function resolveRoleDirectory({ rootPath, roleReference }) {
 export async function resolveCurrentRole({ rootPath, readJson = async (filePath) => JSON.parse(await fs.readFile(filePath, "utf8")) }) {
   let state;
   try {
-    state = await readJson(currentRolePath(rootPath));
+    state = await readJson(await boundedPath(rootPath, ".recruitment-agent", "current-role.json"));
   } catch (error) {
     if (error?.code === "ENOENT") throw new Error("当前没有已选择的岗位。请先新建岗位或明确说“切换到某岗位”。");
     throw error;
   }
   const role = String(state?.role ?? "").trim();
   if (!role) throw new Error("当前岗位状态文件缺少岗位名称。请重新切换岗位。");
-  return role;
+  return safeSegment(role, "岗位名称");
 }
 
 export async function getSelectedRole({ rootPath }) {
@@ -39,10 +40,12 @@ export async function getSelectedRole({ rootPath }) {
 }
 
 export async function setCurrentRole({ rootPath, role }) {
-  const normalizedRole = String(role ?? "").trim();
+  const normalizedRole = safeSegment(role, "岗位名称");
   if (!normalizedRole) throw new Error("岗位名称不能为空。");
-  await fs.mkdir(stateDirectory(rootPath), { recursive: true });
+  return withRootLock(rootPath, async () => {
   const payload = { role: normalizedRole, updatedAt: new Date().toISOString() };
-  await fs.writeFile(currentRolePath(rootPath), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  const target = await boundedPath(rootPath, ".recruitment-agent", "current-role.json");
+  await fs.writeFile(target, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return payload;
+  });
 }

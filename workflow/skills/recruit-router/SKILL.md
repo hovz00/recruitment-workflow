@@ -15,7 +15,7 @@ description: Route a local recruitment-workflow request to role clarification, r
 - 面试官反馈、决策会结论、策略复盘：使用 `feedback-calibration`。
 - Offer / 入职进展：读取 `templates/Offer与入职提示词.md`，输出状态更新草稿，等待人工确认。
 - 人才盘点或搜寻词调整：读取 `SOURCING_STRATEGY.md` 与 `KEYWORD_ITERATIONS.md`，只输出有证据的观察。
-- 招聘数据复盘：以 Excel 台账和 `PIPELINE.json` 为事实源，同步到由正式模板创建的 `index.html`；看板不能反向覆盖台账。
+- 招聘数据复盘：以 Excel 台账和 `PIPELINE.json` 为事实源，同步到由正式模板创建的 `招聘数据复盘.html`；看板不能反向覆盖台账。
 
 遇到适用岗位或招聘环节不明的反馈，先只问：**这条反馈具体适用于哪个岗位或招聘环节？** 未澄清前不得修改岗位标准、评分或搜寻策略。
 

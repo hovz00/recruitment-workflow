@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import ExcelJS from "exceljs";
+import { readPipeline } from "./pipeline-config.mjs";
 
 const interviewDateFields = ["一面日期", "二面日期", "三面日期", "HRBP日期", "决策会日期"];
 
@@ -42,21 +43,29 @@ export async function getRoleSnapshot({ roleName, rolePath, now = new Date() }) 
     optionalText(path.join(rolePath, "CONTEXT.md")),
     optionalText(path.join(rolePath, "ACTION_LOG.md")),
   ]);
-  const inProgressRows = rows.filter((row) => text(row["阶段状态"]) === "进行中");
+  const pipeline = await readPipeline(path.join(rolePath, "PIPELINE.json"));
+  const lastStage = pipeline.stages.at(-1);
+  const finalLabel = `${lastStage.id}-${lastStage.name}`;
+  const inProgressRows = rows.filter(row => text(row["阶段状态"]) === "进行中" || (text(row["阶段状态"]) === "通过" && text(row["主阶段"]) !== finalLabel));
   const dueFollowUps = inProgressRows.filter((row) => {
     const due = asDate(row["下次跟进日期"]);
     return due && due <= now;
   }).length;
   const missingNextActions = inProgressRows.filter((row) => !hasValue(row["下一步动作"])).length;
   const pendingFeedback = inProgressRows.filter((row) => {
-    if (hasValue(row["面试反馈摘要"])) return false;
-    return interviewDateFields.some((field) => {
+    if (text(row["阶段状态"]) !== "进行中") return false;
+    const stage = text(row["主阶段"]).replace(/^\d+-/, "");
+    const feedback = text(row["面试反馈摘要"]);
+    if (feedback.includes(`[${text(row["主阶段"])}]`)) return false;
+    const matchingFields = interviewDateFields.filter(field => stage.includes(field.replace(/日期$/, "")));
+    return matchingFields.some((field) => {
       const date = asDate(row[field]);
       return date && date <= now;
     });
   }).length;
   const lastAction = [...actionLog.matchAll(/^##\s+(.+)$/gm)].at(-1)?.[1] ?? "无";
-  const standardVersion = context.match(/当前标准版本：\s*([^\n]+)/)?.[1]?.trim() ?? "待确认";
+  const rawVersion = context.match(/当前标准版本：[ \t]*([^\n]+)/)?.[1]?.trim() ?? "待确认";
+  const standardVersion = /\{\{|草稿|待确认/.test(rawVersion) || context.includes("尚未完成需求确认") ? "待确认" : rawVersion;
   const lastDashboardSync = context.match(/最近同步时间：\s*([^\n]+)/)?.[1]?.trim() ?? "未同步";
   const nextActions = [];
   if (dueFollowUps) nextActions.push(`处理 ${dueFollowUps} 名到期未跟进候选人`);
