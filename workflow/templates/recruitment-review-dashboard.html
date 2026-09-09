@@ -1678,6 +1678,9 @@
     let sheetColumnMappings = {};
     let autoImportWarnings = [];
     let manualColumnMappingActive = false;
+    let pendingImportState = null;
+    let stagedUploadState = null;
+    let importAttemptId = 0;
     let currentMainView = 'review';
     let currentDetailView = 'stage';
     const detailViewFilters = {
@@ -1980,8 +1983,10 @@
       const draft = getValidatedTemplateDraft();
       if (!draft) return;
       const shouldChooseFile = pendingUploadAfterStageConfig;
+      const previousImportState = shouldChooseFile && rawData.length ? captureImportState() : null;
       const result = applyStageConfiguration(draft.stages);
       if (!result.applied) return;
+      stagedUploadState = previousImportState;
       stageConfigDraft = null;
       error.hidden = true;
       document.getElementById('stageConfigModal').classList.remove('active');
@@ -2727,9 +2732,14 @@
     // 文件上传处理
     document.getElementById('fileInput').addEventListener('change', function(e) {
       if (e.target.files[0]) {
-        currentFile = e.target.files[0];
-        parseFileHeader(currentFile);
+        parseFileHeader(e.target.files[0]);
       }
+    });
+    document.getElementById('fileInput').addEventListener('cancel', function() {
+      if (!stagedUploadState) return;
+      pendingImportState = stagedUploadState;
+      stagedUploadState = null;
+      restorePendingImport();
     });
 
     function readWorkbook(arrayBuffer) {
@@ -2794,6 +2804,7 @@
     }
 
     function getExcelHeaderColumns(workbook) {
+      validateImportWorkbook(workbook);
       const columnSet = new Set();
       workbook.SheetNames.forEach(sheetName => {
         const worksheet = workbook.Sheets[sheetName];
@@ -2813,22 +2824,48 @@
     function getSheetHeaderColumns(worksheet) {
       const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
       const headerRow = rows.find(row => hasRowContent(row));
-      return (headerRow || []).map(col => String(col || '').trim()).filter(Boolean);
+      return (headerRow || []).map(col => String(col || '').trim());
     }
 
     function getSheetRows(worksheet) {
       return XLSX.utils.sheet_to_json(worksheet, { defval: '' }).filter(row => hasRowContent(row));
     }
 
+    function hasExactImportField(field, columns) {
+      const aliases = new Set((FIELD_SYNONYMS[field] || []).map(normalizeHeaderText));
+      return columns.some(column => aliases.has(normalizeHeaderText(column)));
+    }
+
+    function validateImportHeaders(columns) {
+      const normalized = columns.map(normalizeHeaderText);
+      if (normalized.some(column => !column) || new Set(normalized).size !== normalized.length) {
+        throw new Error('表头包含空列名或重复列名，请为每个数据列填写唯一表头后重新上传。');
+      }
+    }
+
+    function validateImportWorkbook(workbook) {
+      for (const sheetName of workbook.SheetNames) {
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+        const first = rows.findIndex(hasRowContent);
+        // 操作台账的说明行在前、业务字段在后，不能当作首行表头的复盘数据。
+        const operationalHeader = rows.slice(first + 1, first + 4).some(row => {
+          const fields = row.map(normalizeHeaderText);
+          return fields.includes('候选人id') && fields.includes('当前阶段') && fields.includes('阶段状态');
+        });
+        if (operationalHeader) throw new Error('这是招聘操作台账，不能直接导入复盘看板。请先使用 workflow 的复盘导出命令生成标准 CSV/XLSX，再上传导出文件。');
+      }
+    }
+
     function isRecruitmentDataSheet(sheetName, columns) {
       const normalizedName = normalizeHeaderText(sheetName);
-      if (normalizedName === normalizeHeaderText('招聘数据模板')) return true;
-      if (/使用说明|填写说明|阶段配置|配置示例/.test(normalizedName)) return false;
-      const hasMainStage = Boolean(findBestColumnMatchInColumns('main_status', columns));
-      const hasStageState = Boolean(findBestColumnMatchInColumns('sub_status', columns));
+      if (/使用说明|填写说明|阶段配置|配置示例|选项配置|字段字典/.test(normalizedName)) return false;
+      const hasMainStage = hasExactImportField('main_status', columns);
       const hasStageDates = hasStageDateColumns(columns);
-      const hasRecordField = ['candidate_name', 'resume_time', 'job_name', 'source', 'company'].some(field => Boolean(findBestColumnMatchInColumns(field, columns)));
-      return (hasMainStage || hasStageDates) && (hasStageState || hasRecordField);
+      // 来源、阶段和状态也会出现在下拉选项表中，必须再有候选人/投递/岗位等记录字段。
+      const hasRecordField = ['candidate_name', 'resume_time', 'job_name', 'company'].some(field => hasExactImportField(field, columns));
+      if (!(hasMainStage || hasStageDates) || !hasRecordField) return false;
+      validateImportHeaders(columns);
+      return true;
     }
 
     function findBestColumnMatchInColumns(field, columns) {
@@ -2908,8 +2945,10 @@
       return columns.some(col => getStageDateColumnCode(col) !== null);
     }
 
-    async function readExcelAllSheets(arrayBuffer) {
+    async function readExcelAllSheets(arrayBuffer, attemptId = null) {
       const workbook = await readWorkbook(arrayBuffer);
+      if (attemptId !== null && attemptId !== importAttemptId) return [];
+      validateImportWorkbook(workbook);
       const rows = [];
       sheetColumnMappings = {};
       autoImportWarnings = [];
@@ -2964,31 +3003,65 @@
       return !hasMainStatus && !canInferStage;
     }
 
+    function captureImportState() {
+      return { rawData, importedSourceRows, currentAnalysisResult, columnMapping,
+        availableColumns, currentFile, sheetColumnMappings, autoImportWarnings, manualColumnMappingActive, STAGES_CONFIG };
+    }
+
+    function restorePendingImport() {
+      if (!pendingImportState) return;
+      const configurationChanged = STAGES_CONFIG !== pendingImportState.STAGES_CONFIG;
+      ({ rawData, importedSourceRows, currentAnalysisResult, columnMapping, availableColumns,
+        currentFile, sheetColumnMappings, autoImportWarnings, manualColumnMappingActive, STAGES_CONFIG } = pendingImportState);
+      pendingImportState = null;
+      if (configurationChanged && currentAnalysisResult) {
+        renderRevision += 1;
+        renderedRevisionByView = { review: -1, reviewAnalysis: -1, details: -1, attention: -1 };
+        syncCurrentRange(currentAnalysisResult);
+        renderMainView(currentMainView, currentAnalysisResult);
+      }
+    }
+
+    function failImport(message) {
+      restorePendingImport();
+      showPageMessage(message);
+    }
+
     function parseFileHeader(file) {
+      restorePendingImport();
+      pendingImportState = stagedUploadState || captureImportState();
+      stagedUploadState = null;
+      const attemptId = ++importAttemptId;
+      currentFile = file;
       hidePageMessage();
       manualColumnMappingActive = false;
       if (!/\.(xlsx|csv)$/i.test(file.name || '')) {
-        showPageMessage('文件格式不支持，请上传 .xlsx 或 .csv 文件。');
+        failImport('文件格式不支持，请上传 .xlsx 或 .csv 文件。');
         return;
       }
       const reader = new FileReader();
       reader.onload = async function(event) {
         try {
+          if (attemptId !== importAttemptId) return;
           if (isCsvFile(file)) {
             const text = event.target.result;
             const rows = parseCsvText(text);
-            availableColumns = rows.length > 0 ? rows[0].map(c => String(c || '').trim()).filter(Boolean) : [];
+            availableColumns = rows.length > 0 ? rows[0].map(c => String(c || '').trim()) : [];
+            validateImportHeaders(availableColumns);
+            const hasRecord = ['candidate_name', 'resume_time', 'job_name', 'company'].some(field => hasExactImportField(field, availableColumns));
+            if (!hasRecord) throw new Error('未识别到候选人、投递时间或岗位等记录字段，请上传招聘数据，勿上传选项配置或字段字典。');
           } else {
             if (!canReadLocalXlsx()) {
-              showPageMessage('当前浏览器缺少本地 Excel 读取能力，请使用新版 Chrome/Edge，或将表格另存为 CSV 后上传。');
+              failImport('当前浏览器缺少本地 Excel 读取能力，请使用新版 Chrome/Edge，或将表格另存为 CSV 后上传。');
               return;
             }
             const arrayBuffer = event.target.result;
             const workbook = await readWorkbook(arrayBuffer);
+            if (attemptId !== importAttemptId) return;
             availableColumns = getExcelHeaderColumns(workbook);
           }
           if (availableColumns.length === 0) {
-            showPageMessage('未识别到表头，请检查文件内容。');
+            failImport('未识别到有效招聘数据表头。请上传首行为字段名的复盘数据，勿上传操作台账、选项配置或字段字典。');
             return;
           }
           columnMapping = {};
@@ -2996,12 +3069,13 @@
             showPageMessage('未能自动识别“当前阶段/状态”字段，请在弹窗中手动选择后导入。', 'info');
             showMappingModal();
           } else {
-            importData(file);
+            importData(file, attemptId);
           }
         } catch (error) {
-          showPageMessage('文件解析失败：' + error.message);
+          if (attemptId === importAttemptId) failImport('文件解析失败：' + error.message);
         }
       };
+      reader.onerror = () => { if (attemptId === importAttemptId) failImport('文件读取失败，请重新选择文件。'); };
       
       if (isCsvFile(file)) {
         reader.readAsText(file);
@@ -3050,8 +3124,9 @@
     }
 
     // 关闭映射弹窗
-    function closeMappingModal() {
+    function closeMappingModal(cancel = true) {
       document.getElementById('mappingModal').classList.remove('active');
+      if (cancel) restorePendingImport();
     }
 
     // 确认映射并导入
@@ -3080,8 +3155,8 @@
       }
       
       manualColumnMappingActive = true;
-      closeMappingModal();
-      importData(currentFile);
+      closeMappingModal(false);
+      importData(currentFile, importAttemptId);
     }
 
     function commitImportedRows(sourceRows) {
@@ -3101,7 +3176,7 @@
     }
 
     // 导入数据
-    function importData(file) {
+    function importData(file, attemptId = importAttemptId) {
       if (!file) {
         showPageMessage('请先选择要导入的表格文件。');
         return;
@@ -3109,11 +3184,13 @@
       const reader = new FileReader();
       reader.onload = async function(event) {
         try {
+          if (attemptId !== importAttemptId) return;
           let jsonData;
           if (isCsvFile(file)) {
             const text = event.target.result;
             const rows = parseCsvText(text);
             const headers = rows.length > 0 ? rows[0].map(c => String(c || '').trim()) : [];
+            validateImportHeaders(headers);
             autoImportWarnings = [];
             jsonData = rows.slice(1).map(values => {
               const obj = {};
@@ -3128,25 +3205,28 @@
             };
           } else {
             if (!canReadLocalXlsx()) {
-              showPageMessage('当前浏览器缺少本地 Excel 读取能力，请使用新版 Chrome/Edge，或将表格另存为 CSV 后上传。');
+              failImport('当前浏览器缺少本地 Excel 读取能力，请使用新版 Chrome/Edge，或将表格另存为 CSV 后上传。');
               return;
             }
             const arrayBuffer = event.target.result;
-            jsonData = await readExcelAllSheets(arrayBuffer);
+            jsonData = await readExcelAllSheets(arrayBuffer, attemptId);
+            if (attemptId !== importAttemptId) return;
           }
           
           if (!commitImportedRows(jsonData)) {
-            showPageMessage('未识别到有效数据，请检查表格列名或阶段/状态内容。');
+            failImport('未识别到有效数据，请检查表格列名或阶段/状态内容。');
             return;
           }
           const warningText = autoImportWarnings.length ? '；' + autoImportWarnings.join('；') : '';
+          pendingImportState = null;
           showPageMessage('已导入 ' + rawData.length + ' 条招聘记录。' + warningText, autoImportWarnings.length ? 'info' : 'success');
           
         } catch (error) {
-          showPageMessage('数据导入失败：' + error.message);
+          if (attemptId === importAttemptId) failImport('数据导入失败：' + error.message);
           console.error(error);
         }
       };
+      reader.onerror = () => { if (attemptId === importAttemptId) failImport('文件读取失败，请重新选择文件。'); };
       
       if (isCsvFile(file)) {
         reader.readAsText(file);

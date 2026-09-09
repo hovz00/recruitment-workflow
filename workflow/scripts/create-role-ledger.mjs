@@ -9,7 +9,8 @@ export const ledgerColumns = [
   "候选人ID", "姓名", "年龄", "学历", "总工作年限", "对口岗位年限", "对口项目年限", "当前公司", "当前岗位", "当前Base", "目标Base", "简历收取时间", "简历来源", "推荐人/渠道", "简历/档案链接", "年龄/年限资格提示", "能力证据得分", "证据覆盖率", "核心证据缺口", "主阶段", "阶段状态", "状态更新时间", "下一步动作", "下次跟进日期", "责任人", "是否看机会", "求职动机", "当前薪资", "期望薪资", "期望职级", "电话纪要", "一面日期", "二面日期", "三面日期", "HRBP日期", "决策会日期", "面试反馈摘要", "业务判断", "终止原因", "备注", "策略反馈标签", "更新人", "最后更新时间",
 ];
 export function getLedgerColumns(pipeline) {
-  return [...ledgerColumns, "Offer接受日期", "预计入职日期", ...normalizePipeline(pipeline).stages.flatMap(({ id, name }) => [`${id}-${name}日期`, `${id}-${name}通过日期`])];
+  const stages=normalizePipeline(pipeline).stages;
+  return [...new Set([...ledgerColumns, "Offer接受日期", "预计入职日期", ...stages.flatMap(({ id, name }) => [`${id}-${name}日期`, `${id}-${name}通过日期`]),...stages.map(s=>s.appointmentField).filter(Boolean)])];
 }
 export const statusValues = ["进行中", "通过", "终止"];
 export const terminationReasons = ["不看机会/无意向", "Base 不符", "联系不上", "薪资不符", "简历不匹配", "面试/评审不通过", "横向比较", "候选人自行退出", "岗位暂停", "其他待说明"];

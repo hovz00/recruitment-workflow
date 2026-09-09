@@ -14,7 +14,7 @@
 
 输出 `ROLE_STANDARD.md`、`CONTEXT.md`、`SOURCING_STRATEGY.md`、`KEYWORD_ITERATIONS.md` 和 `PIPELINE.json`。流程示例：初筛 → 电话沟通 → 业务一面 → 业务二面 → Offer → 入职。每个阶段的 SLA 由招聘者确认。
 
-初始化脚本接受 `--documents confirmed-documents.json`：JSON 仅接受 `CONTEXT.md`、`ROLE_STANDARD.md`、`SOURCING_STRATEGY.md`、`KEYWORD_ITERATIONS.md`、`FEEDBACK_ITERATIONS.md` 五个键，值为已确认的完整文本；流程另通过 `--pipeline` 传入。已提供内容原样保存。未提供的文档保留为草稿；存在模板占位符的内容不能冒充确认版本。初始化草稿不代表岗位标准已生效。
+初始化脚本接受 `--documents confirmed-documents.json`：JSON 仅接受 `CONTEXT.md`、`ROLE_STANDARD.md`、`SOURCING_STRATEGY.md`、`KEYWORD_ITERATIONS.md`、`FEEDBACK_ITERATIONS.md` 五个键，值为已确认的完整文本；流程另通过 `--pipeline` 传入。招聘者明确确认后，同时传入 `--confirmation confirmation.json`，记录 `version`、`confirmedBy` 和 `evidence`。已提供内容原样保存；未提供确认信息时仍为草稿，不能生成候选人入库提案。存在模板占位符的内容不能冒充确认版本。旧岗位和标准变更后的确认步骤见[岗位确认与数据校验](WORKFLOW-GUARDS.md)。
 
 ## 2. 寻源与简历评估
 

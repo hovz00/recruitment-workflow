@@ -5,6 +5,7 @@ import ExcelJS from "exceljs";
 import { terminationReasons } from "./create-role-ledger.mjs";
 import { formalDashboardTemplate } from "./create-review-dashboard.mjs";
 import { boundedPath } from "./workspace-safety.mjs";
+import {validateCandidateRecord} from './validate-candidate-record.mjs';
 
 const DATA_START = "/* AUTO_LEDGER_DATA:START */";
 const DATA_END = "/* AUTO_LEDGER_DATA:END */";
@@ -29,7 +30,7 @@ export function normalizeReviewRow(row, role, { privacy = "redacted", index = 0 
     "候选人姓名": internal ? value("姓名") : `候选人${index + 1}`, "简历来源": internal || ["内部人才库", "员工推荐", "招聘平台", "猎头", "官网投递", "活动/社群", "其他", ""].includes(value("简历来源")) ? value("简历来源") : "其他",
     "当前公司": internal ? value("当前公司") : "", "Offer接受日期": value("Offer接受日期"), "预计入职日期": value("预计入职日期"),
   };
-  for (const key of Object.keys(row)) if (/^\d+-.+(?:通过)?日期$/.test(key)) result[key] = value(key);
+  for (const key of Object.keys(row)) if (/^\d+-.+(?:通过)?日期$/.test(key) && !key.endsWith('预约日期')) result[key] = value(key);
   return result;
 }
 export function rowsFromLedgerValues(values, role, options = {}) {
@@ -90,6 +91,12 @@ export async function readReviewData({ ledgerPath, role, privacy = "redacted" })
     slaDays.push(Number(config.getCell(index, 5).value) || null);
   }
   if (!stages.length) throw new Error("选项配置中没有主阶段，无法生成正确顺序的漏斗。");
+  for(let index=1;index<values.length;index++){
+    const cells=values[index];
+    if(!cells.some(value=>String(cellValue(value)).trim()))continue;
+    const record=Object.fromEntries(values[0].map((key,column)=>[key,cellValue(cells[column])]));
+    try{validateCandidateRecord(record,{stages});}catch(error){throw new Error(`候选人台账第 ${index+3} 行：${error.message}`);}
+  }
   const rows = rowsFromLedgerValues(values, role, { privacy });
   const headers = [...reviewHeaders, ...stages.flatMap(stage => [`${stage}日期`, `${stage}通过日期`])];
   return { rows: rows.map(row => Object.fromEntries(headers.map(header => [header, row[header] ?? ""]))), headers, stages, slaDays };

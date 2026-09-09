@@ -8,6 +8,8 @@ import { normalizeStage } from "./update-candidate-ledger.mjs";
 import { syncDashboard } from "./sync-dashboard-data.mjs";
 import { stateDirectory, resolveCurrentRole } from "./agent-state.mjs";
 import { safeSegment, boundedPath, withRootLock } from "./workspace-safety.mjs";
+import {readConfirmedStandard} from './role-standard-state.mjs';
+import {validateCandidateRecord} from './validate-candidate-record.mjs';
 
 const dateFields = new Set(["简历收取时间", "状态更新时间", "下次跟进日期", "一面日期", "二面日期", "三面日期", "HRBP日期", "决策会日期", "最后更新时间"]);
 const protectedFields = new Set(["候选人ID", "姓名"]);
@@ -39,7 +41,12 @@ function validateProposal(proposal, pipeline) {
   if (proposal.id !== undefined) safeSegment(proposal.id, "提案编号");
   if (proposal.evidence !== undefined && !Array.isArray(proposal.evidence)) throw new Error("evidence 必须是数组。");
   if (!Array.isArray(proposal.changes) || proposal.changes.length === 0) throw new Error("提案至少需要一项字段变更。");
-  const dynamicFields = new Set((pipeline?.stages ?? []).flatMap(({id,name}) => [`${id}-${name}日期`, `${id}-${name}通过日期`]));
+  const dynamicFields = new Set((pipeline?.stages ?? []).flatMap(({id,name,appointmentField}) => [`${id}-${name}日期`, `${id}-${name}通过日期`,appointmentField].filter(Boolean)));
+  if(proposal.identityResolution!==undefined){
+    const r=proposal.identityResolution;
+    if(proposal.intent!=='candidate_create'||r?.confirmedDistinct!==true||!Array.isArray(r.matchedCandidateIds)||!r.matchedCandidateIds.length||typeof r.reason!=='string'||!r.reason.trim()||new Set(r.matchedCandidateIds).size!==r.matchedCandidateIds.length)throw new Error('同名核实必须明确确认不同人、列出匹配ID并提供核实依据。');
+    r.matchedCandidateIds.forEach(id=>safeSegment(id,'同名核实编号'));
+  }
   if (new Set(proposal.changes.map(c => c?.field)).size !== proposal.changes.length) throw new Error("提案字段重复。");
   if (proposal.intent === "candidate_create") for (const field of ["简历来源", "简历收取时间", "主阶段", "阶段状态"]) {
     if (!proposal.changes.some(c => c?.field === field && normalizedText(c.after))) throw new Error(`新增候选人必须提供${field}。`);
@@ -63,14 +70,16 @@ export async function createPendingAction({ rootPath, proposal }) {
     const pipelinePath = await boundedPath(rootPath, "workflow", "roles", role, "PIPELINE.json");
     const ledgerPath = await boundedPath(rootPath, "workflow", "roles", role, "candidate-ledger.xlsx");
     validateProposal(proposal, await readPipeline(pipelinePath));
+    const standard=await readConfirmedStandard(path.dirname(pipelinePath));
     const id = proposal.id ?? `P-${crypto.randomUUID()}`;
-    const stored = { ...proposal, id, evidence: proposal.evidence ?? [], status: "pending", createdAt: new Date().toISOString() };
+    const identityEvidence=proposal.identityResolution?[`同名核实：${proposal.identityResolution.matchedCandidateIds.join('、')}；确认不同人；${proposal.identityResolution.reason.trim()}`]:[];
+    const stored = { ...proposal, id, evidence: [...(proposal.evidence??[]),...identityEvidence], standardVersion:standard.version, status: "pending", createdAt: new Date().toISOString() };
     const content = `${JSON.stringify(stored, null, 2)}\n`;
     const pending = await boundedPath(rootPath, path.relative(rootPath, proposalPath(rootPath, id)));
     const receipt = await boundedPath(rootPath, path.relative(rootPath, receiptPath(rootPath, id)));
     const latest = await boundedPath(rootPath, path.relative(rootPath, latestPath(rootPath, role)));
     for (const target of [pending, receipt, latest]) await fs.mkdir(path.dirname(target), {recursive:true});
-    const record = { id, role, digest: digest(content), ledgerDigest: digest(await fs.readFile(ledgerPath)), pipelineDigest: digest(await fs.readFile(pipelinePath)) };
+    const record = { id, role, digest: digest(content), ledgerDigest: digest(await fs.readFile(ledgerPath)), pipelineDigest: digest(await fs.readFile(pipelinePath)),standardConfirmationDigest:standard.confirmationDigest };
     try { await fs.writeFile(receipt, JSON.stringify(record), {flag:"wx"}); }
     catch(error) { if(error.code === "EEXIST") throw new Error("提案编号已存在，不能重复使用。"); throw error; }
     await fs.writeFile(pending, content, {flag:"wx"});
@@ -97,6 +106,8 @@ async function loadProposal(rootPath, proposalId) {
   const ledger = await boundedPath(rootPath,"workflow","roles",proposal.role,"candidate-ledger.xlsx");
   const pipeline = await boundedPath(rootPath,"workflow","roles",proposal.role,"PIPELINE.json");
   if (digest(await fs.readFile(ledger)) !== record.ledgerDigest || digest(await fs.readFile(pipeline)) !== record.pipelineDigest) throw new Error("事实源已变化，请重新生成预览。");
+  const standard=await readConfirmedStandard(path.dirname(pipeline));
+  if(standard.confirmationDigest!==record.standardConfirmationDigest)throw new Error('岗位标准确认版本已变化，请重新生成预览。');
   validateProposal(proposal, await readPipeline(pipeline));
   return proposal;
 }
@@ -172,6 +183,9 @@ function validateChanges({ proposal, row, index, pipeline }) {
   const terminationReason = changeMap.has("终止原因") ? normalizedText(changeMap.get("终止原因")) : normalizedText(row.getCell(index.get("终止原因")).value);
   if (nextStatus === "终止" && !terminationReason) throw new Error("阶段状态为终止时必须提供终止原因。");
   if (nextStatus !== "终止" && terminationReason) throw new Error("重新开启候选人时必须在预览中明确清空终止原因。");
+  const finalRecord=Object.fromEntries([...index].map(([field,column])=>[field,row.getCell(column).value]));
+  for(const [field,value] of changeMap)finalRecord[field]=value;
+  validateCandidateRecord(finalRecord,{stages:pipeline.stages,statuses:pipeline.statuses});
   return changeMap;
 }
 
@@ -214,9 +228,12 @@ async function applyUnderLock({rootPath, proposalId}) {
   if (proposal.intent === "candidate_create") {
     if (row) throw new Error("候选人 ID 已存在，不能重复新增。");
     if (await fs.access(candidatePath).then(() => true).catch(() => false)) throw new Error("候选人档案已存在但台账未匹配，请先核对档案，不能复用此 ID。");
-    sheet.eachRow((current, rowNumber) => {
-      if (rowNumber >= 4 && normalizedText(current.getCell(index.get("姓名")).value) === proposal.candidate.name) throw new Error("候选人姓名已存在，请先确认是否为同一人。");
-    });
+    const matchedIds=[];
+    sheet.eachRow((current,rowNumber)=>{if(rowNumber>=4&&normalizedText(current.getCell(index.get('姓名')).value)===proposal.candidate.name)matchedIds.push(normalizedText(current.getCell(index.get('候选人ID')).value));});
+    if(matchedIds.length||proposal.identityResolution){
+      const resolution=proposal.identityResolution;
+      if(matchedIds.some(id=>!id)||!resolution||matchedIds.length!==resolution.matchedCandidateIds.length||matchedIds.some(id=>!resolution.matchedCandidateIds.includes(id)))throw new Error(`候选人姓名已存在或同名核实范围不一致，请核实匹配ID（${matchedIds.join('、')||'无'}）后重新预览；不同人需明确同名核实依据。`);
+    }
     row = firstEmptyRow(sheet, index);
     row.getCell(index.get("候选人ID")).value = proposal.candidate.id;
     row.getCell(index.get("姓名")).value = proposal.candidate.name;

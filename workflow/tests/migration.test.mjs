@@ -13,6 +13,7 @@ test('legacy migration preserves rows and documents and is repeatable', async t 
   const book=await buildLedger('岗位',pipeline,{capacity:3});const sheet=book.getWorksheet('候选人台账');
   sheet.spliceColumns(ledgerColumns.length+1,sheet.columnCount-ledgerColumns.length);
   sheet.getCell('B4').value='保留姓名';sheet.getCell('AN4').value='保留备注';
+  sheet.getCell('L4').value='2020-01-01';sheet.getCell('M4').value='员工推荐';sheet.getCell('T4').value='0-筛选';sheet.getCell('U4').value='进行中';
   await book.xlsx.writeFile(path.join(rolePath,'candidate-ledger.xlsx'));await fs.writeFile(path.join(rolePath,'PIPELINE.json'),JSON.stringify(pipeline));
   await fs.writeFile(path.join(rolePath,'CONTEXT.md'),'保留岗位事实\n');await fs.writeFile(path.join(rolePath,'index.html'),'<html>旧看板</html>');
   await migrateRoleWorkspace({rootPath,roleName:'岗位'});await migrateRoleWorkspace({rootPath,roleName:'岗位'});

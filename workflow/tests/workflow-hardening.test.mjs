@@ -46,6 +46,7 @@ test("dashboard sync preserves the previous dashboard as a backup", async () => 
   const dashboardPath = path.join(directory, "index.html");
   const workbook = await buildLedger("测试岗位", pipeline);
   workbook.getWorksheet("候选人台账").getCell("B4").value = "候选人A";
+  const row=workbook.getWorksheet('候选人台账');row.getCell('L4').value='2020-01-01';row.getCell('M4').value='员工推荐';row.getCell('T4').value='0-简历初筛';row.getCell('U4').value='进行中';
   await workbook.xlsx.writeFile(ledgerPath);
   await createReviewDashboard(dashboardPath);
   const before = await fs.readFile(dashboardPath, "utf8");

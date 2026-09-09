@@ -9,6 +9,7 @@ import { createPendingAction, applyConfirmedAction } from "../scripts/apply-conf
 import { setCurrentRole } from "../scripts/agent-state.mjs";
 import { buildLedger } from "../scripts/create-role-ledger.mjs";
 import { createReviewDashboard } from "../scripts/create-review-dashboard.mjs";
+import {confirmRoleStandard} from '../scripts/confirm-role-standard.mjs';
 
 async function setupRole() {
   const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "confirmed-action-"));
@@ -16,16 +17,19 @@ async function setupRole() {
   await fs.mkdir(path.join(rolePath, "candidates"), { recursive: true });
   await fs.writeFile(path.join(rolePath, "PIPELINE.json"), JSON.stringify({ stages: [{ id: 0, name: "简历初筛" }, { id: 1, name: "业务一面" }, { id: 2, name: "业务二面" }], statuses: ["进行中", "通过", "终止"] }), "utf8");
   await fs.writeFile(path.join(rolePath, "CONTEXT.md"), "# 测试岗位｜岗位上下文\n", "utf8");
+  await fs.writeFile(path.join(rolePath, 'ROLE_STANDARD.md'), '# 标准\n按项目责任和交付证据核验。');
   await fs.writeFile(path.join(rolePath, "ACTION_LOG.md"), "# 操作日志\n", "utf8");
   const workbook = await buildLedger("测试岗位", JSON.parse(await fs.readFile(path.join(rolePath, "PIPELINE.json"), "utf8")), { capacity: 3 });
   const ledger = workbook.getWorksheet("候选人台账");
   ledger.getCell("A4").value = "C-001";
   ledger.getCell("B4").value = "张某";
+  ledger.getCell('L4').value='2020-01-01';ledger.getCell('M4').value='员工推荐';
   ledger.getCell("T4").value = "1-业务一面";
   ledger.getCell("U4").value = "进行中";
   await workbook.xlsx.writeFile(path.join(rolePath, "candidate-ledger.xlsx"));
   await createReviewDashboard(path.join(rolePath, "招聘数据复盘.html"));
   await setCurrentRole({ rootPath, role: "测试岗位" });
+  await confirmRoleStandard({rootPath,roleName:'测试岗位',version:'v1',confirmedBy:'测试确认人',evidence:'测试前置：确认岗位标准与流程'});
   return { rootPath, rolePath };
 }
 

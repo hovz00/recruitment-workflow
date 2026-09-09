@@ -89,6 +89,7 @@ test("a role can create the formal template and synchronise a configured ledger 
   ledger.getCell("T4").value = "1-业务沟通";
   ledger.getCell("U4").value = "进行中";
   ledger.getCell("M4").value = "员工推荐";
+  ledger.getCell('L4').value='2020-01-01';
   await workbook.xlsx.writeFile(ledgerPath);
   await createReviewDashboard(dashboardPath);
   await syncDashboard({ ledgerPath, dashboardPath, role: "测试岗位", privacy: "internal" });

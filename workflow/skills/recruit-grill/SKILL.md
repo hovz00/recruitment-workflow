@@ -17,4 +17,6 @@ description: Turn an ambiguous hiring request into a confirmed role standard, so
 4. `KEYWORD_ITERATIONS.md`：初始假设标记为待验证，而非已生效经验。
 5. `PIPELINE.json`：招聘者确认的主阶段名称、连续顺序与阶段状态。
 
+面试阶段明确配置 `kind: "interview"` 与预约字段，尤其是案例答辩等自定义名称。完整文档与流程获得招聘者明确确认后，初始化时传入确认版本、确认人和依据，或调用 `confirm-role-standard.mjs` 记录 `ROLE_CONFIRMATION.json`。标准/流程修改后重新确认；草稿不能开始候选人写回。
+
 未确认的内容只放进“待确认问题”。年龄或年限即使被业务方要求，也要明确其是硬性标准、评分参考还是仅供沟通核实；所有规则生效都需要人工确认。

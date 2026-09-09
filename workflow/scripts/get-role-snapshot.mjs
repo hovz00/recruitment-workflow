@@ -1,9 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import ExcelJS from "exceljs";
-import { readPipeline } from "./pipeline-config.mjs";
-
-const interviewDateFields = ["一面日期", "二面日期", "三面日期", "HRBP日期", "决策会日期"];
+import { readPipeline, interviewAppointmentField } from "./pipeline-config.mjs";
+import {readConfirmedStandard} from './role-standard-state.mjs';
 
 const text = (value) => String(value ?? "").trim();
 const hasValue = (value) => text(value) !== "";
@@ -57,17 +56,20 @@ export async function getRoleSnapshot({ roleName, rolePath, now = new Date() }) 
     const stage = text(row["主阶段"]).replace(/^\d+-/, "");
     const feedback = text(row["面试反馈摘要"]);
     if (feedback.includes(`[${text(row["主阶段"])}]`)) return false;
-    const matchingFields = interviewDateFields.filter(field => stage.includes(field.replace(/日期$/, "")));
+    const definition=pipeline.stages.find(s=>`${s.id}-${s.name}`===text(row['主阶段']));
+    const matchingFields = [interviewAppointmentField(definition)].filter(Boolean);
     return matchingFields.some((field) => {
       const date = asDate(row[field]);
       return date && date <= now;
     });
   }).length;
   const lastAction = [...actionLog.matchAll(/^##\s+(.+)$/gm)].at(-1)?.[1] ?? "无";
-  const rawVersion = context.match(/当前标准版本：[ \t]*([^\n]+)/)?.[1]?.trim() ?? "待确认";
-  const standardVersion = /\{\{|草稿|待确认/.test(rawVersion) || context.includes("尚未完成需求确认") ? "待确认" : rawVersion;
+  const rawVersion = context.match(/当前标准版本：[ \t]*([^\n]+)/)?.[1]?.trim() ?? "";
+  const standardState=await readConfirmedStandard(rolePath).catch(error=>({error:error.message}));
+  const standardVersion = standardState.error || /\{\{|草稿|待确认/.test(rawVersion) || context.includes("尚未完成需求确认") ? "待确认" : standardState.version;
   const lastDashboardSync = context.match(/最近同步时间：\s*([^\n]+)/)?.[1]?.trim() ?? "未同步";
   const nextActions = [];
+  if(standardVersion==='待确认')nextActions.push('核对并确认当前岗位标准与流程');
   if (dueFollowUps) nextActions.push(`处理 ${dueFollowUps} 名到期未跟进候选人`);
   if (pendingFeedback) nextActions.push(`补充 ${pendingFeedback} 条待处理面试反馈`);
   if (missingNextActions) nextActions.push(`为 ${missingNextActions} 名流程中候选人补充下一步动作`);
@@ -76,6 +78,7 @@ export async function getRoleSnapshot({ roleName, rolePath, now = new Date() }) 
   return {
     roleName,
     standardVersion,
+    standardConfirmationIssue:standardState.error??null,
     pipelineConfigured: await fs.access(path.join(rolePath, "PIPELINE.json")).then(() => true).catch(() => false),
     candidateTotal: rows.length,
     inProgress: inProgressRows.length,
