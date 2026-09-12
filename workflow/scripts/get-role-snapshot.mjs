@@ -3,6 +3,7 @@ import path from "node:path";
 import ExcelJS from "exceljs";
 import { readPipeline, interviewAppointmentField } from "./pipeline-config.mjs";
 import {readConfirmedStandard} from './role-standard-state.mjs';
+import {getSelectedRole,sessionArgument,validateSessionId} from './agent-state.mjs';
 
 const text = (value) => String(value ?? "").trim();
 const hasValue = (value) => text(value) !== "";
@@ -35,7 +36,16 @@ async function optionalText(filePath) {
   try { return await fs.readFile(filePath, "utf8"); } catch (error) { if (error?.code === "ENOENT") return ""; throw error; }
 }
 
-export async function getRoleSnapshot({ roleName, rolePath, now = new Date() }) {
+export async function getRoleSnapshot({ rootPath, sessionId, roleName, rolePath, now = new Date() }) {
+  validateSessionId(sessionId);
+  if (rootPath && (sessionId !== undefined || !roleName || !rolePath)) {
+    const selected = await getSelectedRole({ rootPath, sessionId });
+    if ((roleName && roleName !== selected.role) || (rolePath && path.resolve(rolePath) !== path.resolve(selected.rolePath))) throw new Error('查询岗位与当前会话岗位不一致。');
+    roleName = selected.role;
+    rolePath = selected.rolePath;
+  }
+  if (sessionId !== undefined && !rootPath) throw new Error('指定会话时必须提供 --root 项目根目录。');
+  if (!roleName || !rolePath) throw new Error('请提供 --root 或 --role 与 --role-path。');
   const ledgerPath = path.join(rolePath, "candidate-ledger.xlsx");
   const [rows, context, actionLog] = await Promise.all([
     readCandidateRows(ledgerPath),
@@ -93,12 +103,11 @@ export async function getRoleSnapshot({ roleName, rolePath, now = new Date() }) 
 
 function argument(name) { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; }
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log("用途：读取岗位的可恢复工作状态。\n用法：node workflow/scripts/get-role-snapshot.mjs --role <岗位名称> --role-path <岗位目录>");
+  console.log("用途：读取岗位的可恢复工作状态。\n用法：node workflow/scripts/get-role-snapshot.mjs --root <项目根目录> [--session <会话编号>]\n兼容：--role <岗位名称> --role-path <岗位目录>");
   process.exit(0);
 }
 if (process.argv[1]?.endsWith("get-role-snapshot.mjs")) {
   const roleName = argument("--role");
   const rolePath = argument("--role-path");
-  if (!roleName || !rolePath) throw new Error("用法：--role <岗位名称> --role-path <岗位目录>");
-  console.log(JSON.stringify(await getRoleSnapshot({ roleName, rolePath }), null, 2));
+  console.log(JSON.stringify(await getRoleSnapshot({ rootPath: argument('--root'), sessionId: sessionArgument(), roleName, rolePath }), null, 2));
 }

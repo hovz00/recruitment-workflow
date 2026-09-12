@@ -6,10 +6,11 @@ import { ledgerColumns } from "./create-role-ledger.mjs";
 import { readPipeline } from "./pipeline-config.mjs";
 import { normalizeStage } from "./update-candidate-ledger.mjs";
 import { syncDashboard } from "./sync-dashboard-data.mjs";
-import { stateDirectory, resolveCurrentRole } from "./agent-state.mjs";
+import { stateDirectory, resolveCurrentRole, sessionStateDirectory, validateSessionId, sessionLockOptions, sessionArgument } from "./agent-state.mjs";
 import { safeSegment, boundedPath, withRootLock } from "./workspace-safety.mjs";
 import {readConfirmedStandard} from './role-standard-state.mjs';
 import {validateCandidateRecord} from './validate-candidate-record.mjs';
+import {findCrossRoleMatches} from './application-catalog.mjs';
 
 const dateFields = new Set(["简历收取时间", "状态更新时间", "下次跟进日期", "一面日期", "二面日期", "三面日期", "HRBP日期", "决策会日期", "最后更新时间"]);
 const protectedFields = new Set(["候选人ID", "姓名"]);
@@ -21,7 +22,7 @@ function normalizedText(value) { return String(value ?? "").trim(); }
 const safeRoleName = (role) => safeSegment(role, "岗位名称");
 const digest = value => crypto.createHash("sha256").update(value).digest("hex");
 const receiptPath = (root, id) => path.join(stateDirectory(root), "proposal-receipts", `${safeSegment(id)}.json`);
-const latestPath = (root, role) => path.join(stateDirectory(root), "latest-proposals", `${safeSegment(role)}.json`);
+const latestPath = (root, role, sessionId) => path.join(sessionStateDirectory(root, sessionId), "latest-proposals", `${safeSegment(role)}.json`);
 function comparable(value) {
   if (value instanceof Date && !Number.isNaN(value.valueOf())) return value.toISOString().slice(0, 10);
   return normalizedText(value);
@@ -64,43 +65,50 @@ function validateProposal(proposal, pipeline) {
   }
 }
 
-export async function createPendingAction({ rootPath, proposal }) {
+export async function createPendingAction({ rootPath, proposal, sessionId }) {
+  validateSessionId(sessionId);
   return withRootLock(rootPath, async () => {
     const role = safeRoleName(proposal?.role);
+    if (sessionId !== undefined && await resolveCurrentRole({ rootPath, sessionId }) !== role) throw new Error("提案岗位与当前岗位不一致，请重新选择岗位并生成预览。");
     const pipelinePath = await boundedPath(rootPath, "workflow", "roles", role, "PIPELINE.json");
     const ledgerPath = await boundedPath(rootPath, "workflow", "roles", role, "candidate-ledger.xlsx");
     validateProposal(proposal, await readPipeline(pipelinePath));
     const standard=await readConfirmedStandard(path.dirname(pipelinePath));
     const id = proposal.id ?? `P-${crypto.randomUUID()}`;
     const identityEvidence=proposal.identityResolution?[`同名核实：${proposal.identityResolution.matchedCandidateIds.join('、')}；确认不同人；${proposal.identityResolution.reason.trim()}`]:[];
-    const stored = { ...proposal, id, evidence: [...(proposal.evidence??[]),...identityEvidence], standardVersion:standard.version, status: "pending", createdAt: new Date().toISOString() };
+    const crossRole = proposal.intent === 'candidate_create'
+      ? await findCrossRoleMatches({ rootPath, role, name: proposal.candidate.name }).catch(error => ({ matches: [], issues: [{ message: `跨岗位候选人查询未完成：${error.message}` }] }))
+      : { matches: [], issues: [] };
+    const stored = { ...proposal, sessionId, id, crossRoleMatches: crossRole.matches, crossRoleMatchIssues: crossRole.issues, evidence: [...(proposal.evidence??[]),...identityEvidence], standardVersion:standard.version, status: "pending", createdAt: new Date().toISOString() };
     const content = `${JSON.stringify(stored, null, 2)}\n`;
     const pending = await boundedPath(rootPath, path.relative(rootPath, proposalPath(rootPath, id)));
     const receipt = await boundedPath(rootPath, path.relative(rootPath, receiptPath(rootPath, id)));
-    const latest = await boundedPath(rootPath, path.relative(rootPath, latestPath(rootPath, role)));
+    const latest = await boundedPath(rootPath, path.relative(rootPath, latestPath(rootPath, role, sessionId)));
     for (const target of [pending, receipt, latest]) await fs.mkdir(path.dirname(target), {recursive:true});
-    const record = { id, role, digest: digest(content), ledgerDigest: digest(await fs.readFile(ledgerPath)), pipelineDigest: digest(await fs.readFile(pipelinePath)),standardConfirmationDigest:standard.confirmationDigest };
+    const record = { id, role, sessionId, digest: digest(content), ledgerDigest: digest(await fs.readFile(ledgerPath)), pipelineDigest: digest(await fs.readFile(pipelinePath)),standardConfirmationDigest:standard.confirmationDigest };
     try { await fs.writeFile(receipt, JSON.stringify(record), {flag:"wx"}); }
     catch(error) { if(error.code === "EEXIST") throw new Error("提案编号已存在，不能重复使用。"); throw error; }
     await fs.writeFile(pending, content, {flag:"wx"});
     await fs.writeFile(latest, JSON.stringify(record));
     return stored;
-  });
+  }, sessionLockOptions(sessionId));
 }
 
-async function loadProposal(rootPath, proposalId) {
+async function loadProposal(rootPath, proposalId, sessionId) {
   const target = await boundedPath(rootPath, path.relative(rootPath, proposalPath(rootPath, proposalId)));
   let content;
   try { content = await fs.readFile(target, "utf8"); }
   catch (error) { if (error?.code === "ENOENT") throw new Error("待确认提案不存在或已执行。请重新生成变更预览。"); throw error; }
   const proposal = JSON.parse(content);
+  if (proposal.sessionId !== sessionId) throw new Error("提案与当前会话不一致，请在生成预览的会话中确认执行。");
   safeRoleName(proposal?.role);
-  if (await resolveCurrentRole({rootPath}) !== proposal.role) throw new Error("提案岗位与当前岗位不一致，请重新选择岗位并生成预览。");
-  const latest = await boundedPath(rootPath, path.relative(rootPath, latestPath(rootPath, proposal.role)));
+  if (await resolveCurrentRole({rootPath, sessionId}) !== proposal.role) throw new Error("提案岗位与当前岗位不一致，请重新选择岗位并生成预览。");
+  const latest = await boundedPath(rootPath, path.relative(rootPath, latestPath(rootPath, proposal.role, sessionId)));
   const receipt = await boundedPath(rootPath, path.relative(rootPath, receiptPath(rootPath, proposalId)));
   let record, current;
   try { [record, current] = await Promise.all([fs.readFile(receipt,"utf8").then(JSON.parse),fs.readFile(latest,"utf8").then(JSON.parse)]); }
   catch { throw new Error("提案缺少确认预览记录，请重新生成预览。"); }
+  if (record.sessionId !== sessionId || current.sessionId !== sessionId) throw new Error("提案确认记录与当前会话不一致，请重新生成预览。");
   if (proposal.id !== proposalId || proposal.status !== "pending" || record.digest !== digest(content)) throw new Error("提案内容已变化，请重新生成预览。");
   if (current.id !== proposalId || current.digest !== record.digest) throw new Error("提案已失效，请确认最新预览。");
   const ledger = await boundedPath(rootPath,"workflow","roles",proposal.role,"candidate-ledger.xlsx");
@@ -209,12 +217,12 @@ async function appendActionLog(filePath, proposal) {
   await fs.writeFile(filePath, `${current.trimEnd()}\n${entry}`, "utf8");
 }
 
-export async function applyConfirmedAction({ rootPath, proposalId }) {
-  return withRootLock(rootPath, () => applyUnderLock({rootPath, proposalId}));
+export async function applyConfirmedAction({ rootPath, proposalId, sessionId }) {
+  return withRootLock(rootPath, () => applyUnderLock({rootPath, proposalId, sessionId}), sessionLockOptions(sessionId));
 }
 
-async function applyUnderLock({rootPath, proposalId}) {
-  const proposal = await loadProposal(rootPath, proposalId);
+async function applyUnderLock({rootPath, proposalId, sessionId}) {
+  const proposal = await loadProposal(rootPath, proposalId, sessionId);
   const rolePath = path.join(rootPath, "workflow", "roles", safeRoleName(proposal.role));
   const ledgerPath = path.join(rolePath, "candidate-ledger.xlsx");
   const contextPath = path.join(rolePath, "CONTEXT.md");
@@ -252,7 +260,7 @@ async function applyUnderLock({rootPath, proposalId}) {
     await appendActionLog(actionLogPath, proposal);
     await syncDashboard({ ledgerPath, dashboardPath, role: proposal.role, contextPath });
     await fs.rm(proposalPath(rootPath, proposal.id), { force: true });
-    return { proposalId: proposal.id, role: proposal.role, candidate: proposal.candidate, updatedFields: [...changes.keys()] };
+    return { proposalId: proposal.id, sessionId, role: proposal.role, candidate: proposal.candidate, updatedFields: [...changes.keys()] };
   } catch (error) {
     await restoreFiles(manifest);
     throw error;
@@ -261,12 +269,12 @@ async function applyUnderLock({rootPath, proposalId}) {
 
 function argument(name) { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; }
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log("用途：执行已确认的候选人变更提案。\n用法：node workflow/scripts/apply-confirmed-action.mjs --root <项目根目录> --proposal <提案编号>");
+  console.log("用途：执行已确认的候选人变更提案。\n用法：node workflow/scripts/apply-confirmed-action.mjs --root <项目根目录> --proposal <提案编号> [--session <会话编号>]");
   process.exit(0);
 }
 if (process.argv[1]?.endsWith("apply-confirmed-action.mjs")) {
   const rootPath = argument("--root");
   const proposalId = argument("--proposal");
   if (!rootPath || !proposalId) throw new Error("用法：--root <项目根目录> --proposal <提案编号>");
-  console.log(JSON.stringify(await applyConfirmedAction({ rootPath, proposalId }), null, 2));
+  console.log(JSON.stringify(await applyConfirmedAction({ rootPath, proposalId, sessionId: sessionArgument() }), null, 2));
 }

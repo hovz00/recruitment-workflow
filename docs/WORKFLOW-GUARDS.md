@@ -6,10 +6,10 @@
 
 初始化接受 `--documents <文档映射.json>` 和 `--confirmation <确认信息.json>`。确认信息字段为 `version`、`confirmedBy`、`evidence`，均为非空单行文本；只有收到招聘者确认才传入。未传确认信息时可建立草稿工作区，但不能写入候选人。提供确认信息时，岗位标准和上下文必须是完整文档，不能仍有草稿标记或模板占位符。
 
-旧岗位先选择为当前岗位，检查 `ROLE_STANDARD.md`、`CONTEXT.md` 和 `PIPELINE.json`。补齐必要的台账字段后，可使用迁移脚本保留原数据；迁移不等于标准确认。招聘者核对并确认后执行：
+旧岗位先选择为本会话当前岗位，检查 `ROLE_STANDARD.md`、`CONTEXT.md` 和 `PIPELINE.json`。补齐必要的台账字段后，可使用迁移脚本保留原数据；迁移不等于标准确认。招聘者核对并确认后执行（会话编号使用 `create-session.mjs` 的实际返回值）：
 
 ```bash
-node workflow/scripts/confirm-role-standard.mjs --root . --role "岗位名称" --version "已确认版本" --confirmed-by "实际确认人" --evidence "实际确认依据"
+node workflow/scripts/confirm-role-standard.mjs --root . --session "返回的会话编号" --role "岗位名称" --version "已确认版本" --confirmed-by "实际确认人" --evidence "实际确认依据"
 ```
 
 `ROLE_CONFIRMATION.json` 保存标准和流程的内容摘要，`ACTION_LOG.md` 追加确认记录。修改岗位标准或流程后，需再次核对并确认，再生成候选人预览；先前的待确认提案不再适用。常规候选人跟进追加到上下文或操作日志，不会因此使岗位确认失效。

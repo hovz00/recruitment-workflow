@@ -23,13 +23,22 @@ export async function boundedPath(rootPath, ...parts) {
   return target;
 }
 
-export async function withRootLock(rootPath, operation) {
+export async function withRootLock(rootPath, operation, { timeoutMs = 0 } = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 5000) throw new Error('锁等待时间必须为 0–5000 毫秒。');
   const directory = await boundedPath(rootPath, '.recruitment-agent');
   await fs.mkdir(directory, { recursive: true });
   const lockPath = await boundedPath(rootPath, '.recruitment-agent', 'writer.lock');
   let handle;
-  try { handle = await fs.open(lockPath, 'wx'); }
-  catch (error) { if (error.code === 'EEXIST') throw new Error('另一个写入正在执行，或上次进程中断留下 writer.lock；请确认进程退出后重试。'); throw error; }
+  const deadline = performance.now() + timeoutMs;
+  while (!handle) {
+    try { handle = await fs.open(lockPath, 'wx'); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new Error('另一个写入正在执行，或上次进程中断留下 writer.lock；请确认进程退出后重试。');
+      await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining)));
+    }
+  }
   try { await handle.writeFile(JSON.stringify({pid:process.pid,startedAt:new Date().toISOString()})); return await operation(); }
   finally { await handle.close(); await fs.rm(lockPath, {force:true}); }
 }
