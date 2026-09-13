@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "node --test workflow/tests/*.test.mjs",
-    "test:browser": "node workflow/tests/browser-review.mjs"
+    "test:browser": "node workflow/tests/browser-review.mjs && node workflow/tests/browser-live-review.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0"

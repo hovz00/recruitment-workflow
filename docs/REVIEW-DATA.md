@@ -1,6 +1,6 @@
 # 复盘数据与上传约定
 
-候选人台账是操作事实源；HTML、XLSX 和 CSV 都由 `readReviewData` 的同一套字段映射生成。看板的手动上传仅改变当前浏览器中的分析，刷新会恢复文件内嵌数据，修改台账后需重新同步。
+候选人台账是操作事实源；HTML、XLSX 和 CSV 使用同一套字段映射。离线 HTML 保存同步时的快照，台账修改后需重新同步并刷新。实时看板通过本地服务持续读取固定岗位台账或指定的标准导出文件，有效变化后自动更新页面。手动上传仅改变当前浏览器中的分析；实时页面会暂停覆盖，点击“恢复指定源”后继续更新。
 
 ## 字段
 
@@ -20,6 +20,16 @@
 阶段 `id` 从 0 连续编号，名称不能重复。可配置 `slaDays` 为 1–90 的整数；未设置时使用看板内置默认值。实际日期未知时留空，不猜测，不填今天，不根据当前阶段编造之前各轮的日期。
 
 ## 预览
+
+实时预览（使用当前对话已经创建的会话编号）：
+
+```bash
+node workflow/scripts/serve-review-dashboard.mjs --root . --session <会话编号>
+```
+
+打开命令返回的本地地址。默认每约 2 秒检查一次；有写锁时等待，数据无效时保留上次有效结果。若需监听标准导出文件，添加 `--source "workflow/roles/岗位名称/exports/recruitment-review-data.xlsx"`，也支持 CSV。该文件必须与启动岗位和流程匹配；岗位流程仍从该岗位 `PIPELINE.json` 读取。手动导入的文件不会自动变成监听源。关闭服务用 Ctrl+C，详细行为见 [批次与实时看板](BATCH-AND-LIVE-REVIEW.md)。
+
+离线快照：
 
 ```bash
 node workflow/scripts/sync-dashboard-data.mjs --ledger "workflow/roles/岗位名称/candidate-ledger.xlsx" --dashboard "workflow/roles/岗位名称/招聘数据复盘.html" --role "岗位名称" --context "workflow/roles/岗位名称/CONTEXT.md"

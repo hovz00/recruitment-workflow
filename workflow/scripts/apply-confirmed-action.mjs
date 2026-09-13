@@ -65,9 +65,9 @@ function validateProposal(proposal, pipeline) {
   }
 }
 
-export async function createPendingAction({ rootPath, proposal, sessionId }) {
+// Internal composition API: caller holds the workspace writer lock.
+export async function prepareCandidatePreview({ rootPath, proposal, sessionId }) {
   validateSessionId(sessionId);
-  return withRootLock(rootPath, async () => {
     const role = safeRoleName(proposal?.role);
     if (sessionId !== undefined && await resolveCurrentRole({ rootPath, sessionId }) !== role) throw new Error("提案岗位与当前岗位不一致，请重新选择岗位并生成预览。");
     const pipelinePath = await boundedPath(rootPath, "workflow", "roles", role, "PIPELINE.json");
@@ -80,6 +80,16 @@ export async function createPendingAction({ rootPath, proposal, sessionId }) {
       ? await findCrossRoleMatches({ rootPath, role, name: proposal.candidate.name }).catch(error => ({ matches: [], issues: [{ message: `跨岗位候选人查询未完成：${error.message}` }] }))
       : { matches: [], issues: [] };
     const stored = { ...proposal, sessionId, id, crossRoleMatches: crossRole.matches, crossRoleMatchIssues: crossRole.issues, evidence: [...(proposal.evidence??[]),...identityEvidence], standardVersion:standard.version, status: "pending", createdAt: new Date().toISOString() };
+    return stored;
+}
+
+export async function createPendingAction({ rootPath, proposal, sessionId }) {
+  return withRootLock(rootPath, async () => {
+    const stored = await prepareCandidatePreview({rootPath,proposal,sessionId});
+    const {role,id}=stored;
+    const ledgerPath=await boundedPath(rootPath,'workflow','roles',role,'candidate-ledger.xlsx');
+    const pipelinePath=await boundedPath(rootPath,'workflow','roles',role,'PIPELINE.json');
+    const standard=await readConfirmedStandard(path.dirname(pipelinePath));
     const content = `${JSON.stringify(stored, null, 2)}\n`;
     const pending = await boundedPath(rootPath, path.relative(rootPath, proposalPath(rootPath, id)));
     const receipt = await boundedPath(rootPath, path.relative(rootPath, receiptPath(rootPath, id)));
@@ -130,6 +140,7 @@ async function backupFiles(rootPath, proposalId, files) {
     if (existed) await fs.copyFile(target, backup);
     manifest.push({ target, backup, existed });
   }
+  await fs.writeFile(path.join(backupDirectory,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');
   return manifest;
 }
 async function restoreFiles(manifest) {
@@ -201,7 +212,7 @@ async function appendCandidateArchive(filePath, proposal) {
   const existed = await fs.access(filePath).then(() => true).catch(() => false);
   const baseline = existed ? await fs.readFile(filePath, "utf8") : `# ${proposal.candidate.id}｜候选人证据档案\n\n`;
   const lines = proposal.changes.map((change) => `- ${change.field}：${comparable(change.before) || "空"} → ${comparable(change.after) || "空"}`);
-  const entry = `\n## ${new Date().toISOString().slice(0, 10)}｜${actionTitle(proposal.intent)}\n\n${lines.join("\n")}\n\n依据：${proposal.evidence.map(normalizedText).filter(Boolean).join("；") || "招聘者确认"}\n`;
+  const entry = `\n## ${new Date().toISOString().slice(0, 10)}｜${actionTitle(proposal.intent)}\n\n${proposal.batchId?`批次：${proposal.batchId}；执行记录：${proposal.id}\n\n`:''}${lines.join("\n")}\n\n依据：${proposal.evidence.map(normalizedText).filter(Boolean).join("；") || "招聘者确认"}\n`;
   await fs.writeFile(filePath, `${baseline.trimEnd()}\n${entry}`, "utf8");
 }
 async function appendContext(filePath, proposal) {
@@ -223,6 +234,13 @@ export async function applyConfirmedAction({ rootPath, proposalId, sessionId }) 
 
 async function applyUnderLock({rootPath, proposalId, sessionId}) {
   const proposal = await loadProposal(rootPath, proposalId, sessionId);
+  return commitCandidateWriteUnderLock({rootPath,proposal,sessionId,removePending:true});
+}
+
+// Shared planning validates complete records but does not touch files.
+export async function planCandidateWrite({rootPath,proposal,ledger}) {
+  const pipeline=await readPipeline(await boundedPath(rootPath,'workflow','roles',safeRoleName(proposal.role),'PIPELINE.json'));
+  validateProposal(proposal,pipeline);
   const rolePath = path.join(rootPath, "workflow", "roles", safeRoleName(proposal.role));
   const ledgerPath = path.join(rolePath, "candidate-ledger.xlsx");
   const contextPath = path.join(rolePath, "CONTEXT.md");
@@ -231,7 +249,7 @@ async function applyUnderLock({rootPath, proposalId, sessionId}) {
   const candidatePath = path.join(rolePath, "candidates", `${proposal.candidate.id}.md`);
   const targets = [ledgerPath, contextPath, actionLogPath, dashboardPath, candidatePath, `${dashboardPath}.bak`, `${dashboardPath}.tmp`];
   for (const target of targets) await boundedPath(rootPath, path.relative(rootPath, target));
-  const { workbook, sheet, index } = await readLedger(ledgerPath);
+  const { workbook, sheet, index } = ledger ?? await readLedger(ledgerPath);
   let row = findCandidateRow(sheet, index, proposal.candidate);
   if (proposal.intent === "candidate_create") {
     if (row) throw new Error("候选人 ID 已存在，不能重复新增。");
@@ -246,12 +264,24 @@ async function applyUnderLock({rootPath, proposalId, sessionId}) {
     row.getCell(index.get("候选人ID")).value = proposal.candidate.id;
     row.getCell(index.get("姓名")).value = proposal.candidate.name;
   }
-  const pipeline = await readPipeline(path.join(rolePath, "PIPELINE.json"));
   const changes = validateChanges({ proposal, row, index, pipeline });
+  return {workbook,sheet,index,row,changes,ledgerPath,contextPath,actionLogPath,dashboardPath,candidatePath,targets};
+}
+
+export function applyCandidatePlanInMemory({row,changes,index}) {
+  for (const [field,value] of changes) row.getCell(index.get(field)).value=writeValue(field,value);
+}
+
+// Caller must validate the immutable single/batch preview and hold the root writer lock.
+export async function commitCandidateWriteUnderLock({rootPath,proposal,sessionId,extraTargets=[],afterWrite,removePending=false}) {
+  const plan=await planCandidateWrite({rootPath,proposal});
+  const {workbook,row,index,changes,ledgerPath,contextPath,actionLogPath,dashboardPath,candidatePath}=plan;
+  const targets=[...plan.targets,...extraTargets];
+  for(const target of targets)await boundedPath(rootPath,path.relative(rootPath,target));
   const automatic = { "状态更新时间": new Date(), "最后更新时间": new Date(), "更新人": "招聘者" };
   const manifest = await backupFiles(rootPath, proposal.id, targets);
   try {
-    for (const [field, value] of changes) row.getCell(index.get(field)).value = writeValue(field, value);
+    applyCandidatePlanInMemory(plan);
     Object.entries(automatic).forEach(([field, value]) => row.getCell(index.get(field)).value = value);
     await workbook.xlsx.writeFile(ledgerPath);
     await fs.mkdir(path.dirname(candidatePath), { recursive: true });
@@ -259,10 +289,13 @@ async function applyUnderLock({rootPath, proposalId, sessionId}) {
     await appendContext(contextPath, proposal);
     await appendActionLog(actionLogPath, proposal);
     await syncDashboard({ ledgerPath, dashboardPath, role: proposal.role, contextPath });
-    await fs.rm(proposalPath(rootPath, proposal.id), { force: true });
-    return { proposalId: proposal.id, sessionId, role: proposal.role, candidate: proposal.candidate, updatedFields: [...changes.keys()] };
+    const result={ proposalId: proposal.id, sessionId, role: proposal.role, candidate: proposal.candidate, updatedFields: [...changes.keys()] };
+    if(afterWrite)await afterWrite(result);
+    if(removePending)await fs.rm(proposalPath(rootPath, proposal.id), { force: true });
+    return result;
   } catch (error) {
-    await restoreFiles(manifest);
+    try { await restoreFiles(manifest); }
+    catch(restoreError){const failure=new AggregateError([error,restoreError],`写回与回滚失败，请核对备份：${path.dirname(manifest[0].backup)}`);failure.rollbackFailed=true;throw failure;}
     throw error;
   }
 }
