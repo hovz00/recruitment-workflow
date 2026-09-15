@@ -11,6 +11,8 @@ import { safeSegment, boundedPath, withRootLock } from "./workspace-safety.mjs";
 import {readConfirmedStandard} from './role-standard-state.mjs';
 import {validateCandidateRecord} from './validate-candidate-record.mjs';
 import {findCrossRoleMatches} from './application-catalog.mjs';
+import {validateScoredProposal} from './validate-scored-proposal.mjs';
+import {readSavedAssessment} from './evaluate-resume.mjs';
 
 const dateFields = new Set(["简历收取时间", "状态更新时间", "下次跟进日期", "一面日期", "二面日期", "三面日期", "HRBP日期", "决策会日期", "最后更新时间"]);
 const protectedFields = new Set(["候选人ID", "姓名"]);
@@ -74,12 +76,13 @@ export async function prepareCandidatePreview({ rootPath, proposal, sessionId })
     const ledgerPath = await boundedPath(rootPath, "workflow", "roles", role, "candidate-ledger.xlsx");
     validateProposal(proposal, await readPipeline(pipelinePath));
     const standard=await readConfirmedStandard(path.dirname(pipelinePath));
+    const scoring=await validateScoredProposal(path.dirname(pipelinePath),proposal);
     const id = proposal.id ?? `P-${crypto.randomUUID()}`;
     const identityEvidence=proposal.identityResolution?[`同名核实：${proposal.identityResolution.matchedCandidateIds.join('、')}；确认不同人；${proposal.identityResolution.reason.trim()}`]:[];
     const crossRole = proposal.intent === 'candidate_create'
       ? await findCrossRoleMatches({ rootPath, role, name: proposal.candidate.name }).catch(error => ({ matches: [], issues: [{ message: `跨岗位候选人查询未完成：${error.message}` }] }))
       : { matches: [], issues: [] };
-    const stored = { ...proposal, sessionId, id, crossRoleMatches: crossRole.matches, crossRoleMatchIssues: crossRole.issues, evidence: [...(proposal.evidence??[]),...identityEvidence], standardVersion:standard.version, status: "pending", createdAt: new Date().toISOString() };
+    const stored = { ...proposal, scoringSummary:scoring?.result??null, sessionId, id, crossRoleMatches: crossRole.matches, crossRoleMatchIssues: crossRole.issues, evidence: [...(proposal.evidence??[]),...identityEvidence], standardVersion:standard.version, status: "pending", createdAt: new Date().toISOString() };
     return stored;
 }
 
@@ -242,12 +245,16 @@ export async function planCandidateWrite({rootPath,proposal,ledger}) {
   const pipeline=await readPipeline(await boundedPath(rootPath,'workflow','roles',safeRoleName(proposal.role),'PIPELINE.json'));
   validateProposal(proposal,pipeline);
   const rolePath = path.join(rootPath, "workflow", "roles", safeRoleName(proposal.role));
+  const scoring=await validateScoredProposal(rolePath,proposal);
+  const previousAssessment=scoring?await readSavedAssessment(rolePath,proposal.candidate.id):null;
   const ledgerPath = path.join(rolePath, "candidate-ledger.xlsx");
   const contextPath = path.join(rolePath, "CONTEXT.md");
   const actionLogPath = path.join(rolePath, "ACTION_LOG.md");
   const dashboardPath = path.join(rolePath, "招聘数据复盘.html");
   const candidatePath = path.join(rolePath, "candidates", `${proposal.candidate.id}.md`);
   const targets = [ledgerPath, contextPath, actionLogPath, dashboardPath, candidatePath, `${dashboardPath}.bak`, `${dashboardPath}.tmp`];
+  const assessmentPath=await boundedPath(rolePath,'candidates',`${proposal.candidate.id}.assessment.json`);
+  if(scoring)targets.push(assessmentPath);
   for (const target of targets) await boundedPath(rootPath, path.relative(rootPath, target));
   const { workbook, sheet, index } = ledger ?? await readLedger(ledgerPath);
   let row = findCandidateRow(sheet, index, proposal.candidate);
@@ -265,7 +272,7 @@ export async function planCandidateWrite({rootPath,proposal,ledger}) {
     row.getCell(index.get("姓名")).value = proposal.candidate.name;
   }
   const changes = validateChanges({ proposal, row, index, pipeline });
-  return {workbook,sheet,index,row,changes,ledgerPath,contextPath,actionLogPath,dashboardPath,candidatePath,targets};
+  return {workbook,sheet,index,row,changes,ledgerPath,contextPath,actionLogPath,dashboardPath,candidatePath,targets,scoring,assessmentPath,previousAssessment};
 }
 
 export function applyCandidatePlanInMemory({row,changes,index}) {
@@ -286,6 +293,12 @@ export async function commitCandidateWriteUnderLock({rootPath,proposal,sessionId
     await workbook.xlsx.writeFile(ledgerPath);
     await fs.mkdir(path.dirname(candidatePath), { recursive: true });
     await appendCandidateArchive(candidatePath, proposal);
+    if(plan.scoring){
+      const {history=[],...previous}=plan.previousAssessment??{};
+      const assessmentHistory=plan.previousAssessment?[...history,previous]:[];
+      await fs.writeFile(plan.assessmentPath,JSON.stringify({status:'confirmed',proposalId:proposal.id,confirmedAt:new Date().toISOString(),...plan.scoring,history:assessmentHistory},null,2)+'\n');
+      await fs.appendFile(candidatePath,`\n### 评分依据\n\n- 规则版本：${plan.scoring.result.rulesVersion}\n- 规则摘要：${plan.scoring.result.rulesDigest}\n- 评估标识：${plan.scoring.result.evaluationKey}\n- 模型：${plan.scoring.result.model}\n- 提示词版本：${plan.scoring.result.promptVersion}\n- 复核提示：${plan.scoring.result.recommendation}\n- 重评原因：${plan.scoring.input.reevaluationReason??'首次评估或复用'}\n- 完整证据与引用行号：${path.basename(plan.assessmentPath)}\n`);
+    }
     await appendContext(contextPath, proposal);
     await appendActionLog(actionLogPath, proposal);
     await syncDashboard({ ledgerPath, dashboardPath, role: proposal.role, contextPath });

@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {readPipeline} from './pipeline-config.mjs';
 import {boundedPath} from './workspace-safety.mjs';
+import {readScoringRules} from './scoring-rules.mjs';
 
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const stateName='ROLE_CONFIRMATION.json';
@@ -13,7 +14,8 @@ async function sources(rolePath){
   for(const name of ['ROLE_STANDARD.md','PIPELINE.json'])await boundedPath(rolePath,name);
   const [standard,pipeline]=await Promise.all(['ROLE_STANDARD.md','PIPELINE.json'].map(n=>fs.readFile(path.join(rolePath,n),'utf8')));
   assertDocument(standard,'ROLE_STANDARD.md');await readPipeline(path.join(rolePath,'PIPELINE.json'));
-  return{standardDigest:hash(standard),pipelineDigest:hash(pipeline)};
+  const scoring=await readScoringRules(rolePath);
+  return{standardDigest:hash(standard),pipelineDigest:hash(pipeline),scoringDigest:scoring?.digest??null};
 }
 export function validateConfirmation(confirmation){
   for(const field of ['version','confirmedBy','evidence'])if(typeof confirmation?.[field]!=='string'||!confirmation[field].trim()||/[\r\n]/.test(confirmation[field]))throw new Error(`岗位标准确认必须提供非空单行 ${field}。`);
@@ -31,7 +33,7 @@ export async function writeRoleConfirmation({rolePath,confirmation}){
   const priorLog=await fs.readFile(logPath,'utf8');
   try{
     await fs.writeFile(statePath,JSON.stringify(record,null,2)+'\n');
-    await fs.appendFile(logPath,`\n## ${record.confirmedAt}｜岗位标准确认\n\n- 版本：${record.version}\n- 确认人：${record.confirmedBy}\n- 依据：${record.evidence}\n- 标准摘要：${record.standardDigest}\n- 流程摘要：${record.pipelineDigest}\n`);
+    await fs.appendFile(logPath,`\n## ${record.confirmedAt}｜岗位标准确认\n\n- 版本：${record.version}\n- 确认人：${record.confirmedBy}\n- 依据：${record.evidence}\n- 标准摘要：${record.standardDigest}\n- 流程摘要：${record.pipelineDigest}\n- 评分规则摘要：${record.scoringDigest??"未配置"}\n`);
   }catch(error){if(priorState===null)await fs.rm(statePath,{force:true});else await fs.writeFile(statePath,priorState);await fs.writeFile(logPath,priorLog);throw error;}
   return record;
 }
@@ -43,6 +45,6 @@ export async function readConfirmedStandard(rolePath){
   if(record.status!=='confirmed'||record.schemaVersion!==1)throw new Error('岗位标准尚未确认，请先确认当前标准。');
   validateConfirmation(record);
   const current=await sources(rolePath);
-  if(current.standardDigest!==record.standardDigest||current.pipelineDigest!==record.pipelineDigest)throw new Error('岗位标准或流程已变化，请核对并重新确认标准，再生成新预览。');
+  if(current.standardDigest!==record.standardDigest||current.pipelineDigest!==record.pipelineDigest||current.scoringDigest!==(record.scoringDigest??null))throw new Error('岗位标准、评分规则或流程已变化，请核对并重新确认标准，再生成新预览。');
   return{...record,confirmationDigest:hash(content)};
 }
